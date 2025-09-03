@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -21,18 +23,27 @@ from schemas import (
     PublicNoteResponse
 )
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
-
 # Check if running on Vercel
 IS_VERCEL = os.getenv("VERCEL") == "1"
 
+# Initialize database tables safely
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    # Log error but don't crash the application
+    print(f"Database initialization warning: {e}")
+
 # Create FastAPI app with conditional configuration for Vercel
-app = FastAPI(
-    title="Notes API", 
-    description="A simple notes app with sharing functionality",
-    root_path="/api" if IS_VERCEL else ""
-)
+try:
+    app = FastAPI(
+        title="Notes API", 
+        description="A simple notes app with sharing functionality",
+        root_path="/api" if IS_VERCEL else ""
+    )
+except Exception as e:
+    print(f"FastAPI initialization error: {e}")
+    # Create a minimal app as fallback
+    app = FastAPI(title="Notes API")
 
 # Security
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
@@ -42,30 +53,49 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 security = HTTPBearer()
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://namekart-frontend-w3gv.vercel.app",
-        "https://*.vercel.app",  # Allow all Vercel app domains
-        "http://localhost:5173",
-        "http://localhost:3000", 
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS middleware with error handling
+try:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://namekart-frontend-w3gv.vercel.app",
+            "https://*.vercel.app",  # Allow all Vercel app domains
+            "http://localhost:5173",
+            "http://localhost:3000", 
+            "http://localhost:5174",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000"
+        ],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+except Exception as e:
+    print(f"CORS middleware setup error: {e}")
 
-# Database dependency
+# Global exception handler for better error reporting
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    print(f"Global exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)}
+    )
+
+# Database dependency with error handling
 def get_db():
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
         yield db
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        if db:
+            db.rollback()
+        raise HTTPException(status_code=503, detail="Database connection failed")
     finally:
-        db.close()
+        if db:
+            db.close()
 
 # Auth helper functions
 def verify_password(plain_password, hashed_password):
@@ -106,15 +136,22 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # Routes
 @app.get("/")
 def read_root():
-    return {
-        "message": "Namekart Backend is running",
-        "status": "active",
-        "api": "Notes API",
-        "version": "1.0.0",
-        "environment": "Vercel" if IS_VERCEL else "Local",
-        "api_prefix": "/api" if IS_VERCEL else "",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    try:
+        return {
+            "message": "Namekart Backend is running",
+            "status": "active",
+            "api": "Notes API",
+            "version": "1.0.0",
+            "environment": "Vercel" if IS_VERCEL else "Local",
+            "api_prefix": "/api" if IS_VERCEL else "",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "message": "Namekart Backend - Basic Mode",
+            "status": "active",
+            "error": str(e)
+        }
 
 @app.get("/health")
 def health_check():
